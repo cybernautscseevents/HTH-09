@@ -60,12 +60,13 @@ Frontend: http://localhost:5173
 
 Backend `.env`:
 ```env
-PORT=5000
+PORT=
+CLIENT_URL=http://localhost:5173
 GEMINI_API_KEY=
+GEMINI_MODEL=gemini-3.1-flash-lite
 MONGODB_URI=mongodb://127.0.0.1:27017
 MONGODB_DB=dischara
-AUTH_SECRET=replace-with-a-random-secret-at-least-32-characters-long
-FRONTEND_ORIGIN=http://localhost:5173
+AUTH_SECRET=
 ```
 
 The AI care-plan generator has a deterministic demo fallback without Gemini. MongoDB is required for account sign-in and cloud persistence.
@@ -80,6 +81,12 @@ The app can still:
 New registrations store a salted password hash in MongoDB. Patient history, reminders and the current care plan are scoped to the authenticated account. Existing device-only data is copied to the account the first time it signs in, when that account has no saved data yet.
 
 For the strongest hackathon demo, add a Gemini API key.
+
+## Deployment
+
+See [the Vercel, Render, and MongoDB Atlas deployment guide](docs/DEPLOYMENT.md).
+The frontend uses `VITE_API_URL` (see `frontend/.env.example`) to reach the
+backend; keep MongoDB, Gemini, and `AUTH_SECRET` values on the backend only.
 
 ## Demo flow
 

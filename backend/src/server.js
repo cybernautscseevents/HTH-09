@@ -27,22 +27,53 @@ const app = express();
 
 const PORT = process.env.PORT || 5000;
 let databaseConnected = false;
+const isProduction = process.env.NODE_ENV === "production";
+
+function redactSensitiveText(value) {
+  return String(value || "")
+    .replace(/mongodb(?:\+srv)?:\/\/[^@\s]+@/gi, "mongodb://[redacted]@")
+    .replace(/([?&]key=)[^&\s]+/gi, "$1[redacted]")
+    .replace(/\b(GEMINI_API_KEY|AUTH_SECRET)\b\s*[:=]\s*[^\s,;]+/gi, "$1=[redacted]")
+    .replace(/AIza[0-9A-Za-z_-]{20,}/g, "[redacted]");
+}
+
+function safeErrorMessage(error, fallback) {
+  return isProduction ? fallback : redactSensitiveText(error?.message || fallback);
+}
+
+function logServerError(label, error) {
+  console.error(label, {
+    name: error?.name || "Error",
+    code: error?.code || undefined,
+    status: error?.status || undefined,
+    ...(!isProduction && error?.message ? { message: redactSensitiveText(error.message) } : {}),
+  });
+}
 
 // Gemini model
 // Can also be overridden from backend/.env
 const GEMINI_MODEL =
-  process.env.GEMINI_MODEL || "gemini-2.5-flash";
+  process.env.GEMINI_MODEL || "gemini-3.1-flash-lite";
 
 // ======================================================
 // CORS
 // ======================================================
 
-app.use(
-  cors({
-    origin: process.env.FRONTEND_ORIGIN || "http://localhost:5173",
-    credentials: true,
-  })
+const allowedOrigins = new Set(
+  [process.env.CLIENT_URL, process.env.FRONTEND_ORIGIN, "http://localhost:5173", "http://127.0.0.1:5173"]
+    .flatMap((value) => String(value || "").split(","))
+    .map((origin) => origin.trim().replace(/\/+$/, ""))
+    .filter(Boolean)
 );
+
+app.use(cors({
+  origin(origin, callback) {
+    const normalizedOrigin = String(origin || "").replace(/\/+$/, "");
+    if (!origin || allowedOrigins.has(normalizedOrigin)) return callback(null, true);
+    return callback(new Error("Origin not allowed by CORS."));
+  },
+  credentials: true,
+}));
 
 // ======================================================
 // BODY PARSING
@@ -180,6 +211,12 @@ const CARE_PLAN_SCHEMA = {
             type: "string",
           },
 
+          route: {
+            type: "string",
+            description:
+              "Route of administration only when explicitly stated in the discharge summary; otherwise an empty string",
+          },
+
           frequency: {
             type: "string",
           },
@@ -196,6 +233,7 @@ const CARE_PLAN_SCHEMA = {
         required: [
           "name",
           "dose",
+          "route",
           "frequency",
           "duration",
           "instructions",
@@ -290,6 +328,7 @@ STRICT MEDICAL SAFETY RULES:
     but they must NOT be presented as medical advice.
 22. Return ONLY valid JSON matching the supplied schema.
 23. Confidence must be between 0 and 1.
+24. Include a medicine route only when it is explicitly stated; otherwise return an empty string.
 
 The output must contain:
 
@@ -330,10 +369,7 @@ async function extractTextFromFile(file) {
     .extname(file.originalname)
     .toLowerCase();
 
-  console.log(
-    "\nExtracting file:",
-    file.originalname
-  );
+  console.log("Extracting uploaded document.");
 
   // ====================================================
   // TXT
@@ -433,15 +469,7 @@ function parseGeminiJson(text) {
   try {
     return JSON.parse(cleaned);
   } catch (error) {
-    console.error(
-      "Gemini returned invalid JSON."
-    );
-
-    console.error(
-      "Raw Gemini response:"
-    );
-
-    console.error(text);
+    console.error("Gemini returned invalid structured output.");
 
     throw new Error(
       "Gemini returned invalid JSON."
@@ -466,6 +494,9 @@ function normalizeCarePlan(
 
             dose:
               medicine?.dose || "",
+
+            route:
+              medicine?.route || "",
 
             frequency:
               medicine?.frequency || "",
@@ -591,11 +622,6 @@ async function generateCarePlan({
   );
 
   console.log(
-    "Patient:",
-    patientName || "Not provided"
-  );
-
-  console.log(
     "Text characters:",
     dischargeText.length
   );
@@ -704,31 +730,15 @@ Return ONLY valid JSON.
 
     return normalized;
   } catch (error) {
-    console.error(
-      "\n========================================"
-    );
+    logServerError("Care plan generation failed.", error);
 
-    console.error(
-      "CARE PLAN GENERATION ERROR"
-    );
-
-    console.error(
-      "========================================"
-    );
-
-    console.error(
-      "Status:",
-      error?.status
-    );
-
-    console.error(
-      "Message:",
-      error?.message || error
-    );
-
-    console.error(
-      "========================================"
-    );
+    const withSafeDetails = (message) => {
+      const wrapped = new Error(message, { cause: error });
+      wrapped.safeDetails = redactSensitiveText(
+        error?.message || "Gemini request failed."
+      );
+      return wrapped;
+    };
 
     // ==================================================
     // 429 - QUOTA
@@ -748,7 +758,7 @@ Return ONLY valid JSON.
           "resource_exhausted"
         )
     ) {
-      throw new Error(
+      throw withSafeDetails(
         "Gemini API quota/rate limit reached for this project/model. Please use a project with available quota or wait for the quota reset."
       );
     }
@@ -766,7 +776,7 @@ Return ONLY valid JSON.
         ?.toLowerCase()
         .includes("unavailable")
     ) {
-      throw new Error(
+      throw withSafeDetails(
         `Gemini model ${GEMINI_MODEL} is temporarily unavailable/high demand. Please try again shortly.`
       );
     }
@@ -776,11 +786,8 @@ Return ONLY valid JSON.
     // ==================================================
 
     if (error?.status === 400) {
-      throw new Error(
-        `Gemini rejected the request: ${
-          error?.message ||
-          "Bad request"
-        }`
+      throw withSafeDetails(
+        "Gemini rejected the request. Check the server logs for details."
       );
     }
 
@@ -788,9 +795,8 @@ Return ONLY valid JSON.
     // OTHER ERRORS
     // ==================================================
 
-    throw new Error(
-      error?.message ||
-        "Gemini care-plan generation failed."
+    throw withSafeDetails(
+      "Gemini care-plan generation failed. Check the server logs for details."
     );
   }
 }
@@ -957,10 +963,7 @@ app.post(
         });
       }
 
-      console.log(
-        "File received:",
-        req.file.originalname
-      );
+      console.log("Document received.");
 
       const text =
         await extractTextFromFile(
@@ -1021,11 +1024,7 @@ app.post(
           text.length,
       });
     } catch (error) {
-      console.error(
-        "\nEXTRACTION ERROR"
-      );
-
-      console.error(error);
+      logServerError("Document extraction failed.", error);
 
       if (req.file) {
         cleanupFile(
@@ -1037,8 +1036,7 @@ app.post(
         success: false,
 
         message:
-          error?.message ||
-          "Document extraction failed.",
+          safeErrorMessage(error, "Document extraction failed."),
       });
     }
   }
@@ -1090,18 +1088,16 @@ app.post(
         mode: ai ? "AI" : "DEMO",
       });
     } catch (error) {
-      console.error(
-        "\nGENERATION ROUTE ERROR"
-      );
-
-      console.error(error);
+      logServerError("Care plan route failed.", error);
 
       return res.status(500).json({
         success: false,
 
         message:
-          error?.message ||
-          "Care plan generation failed.",
+          safeErrorMessage(error, "Care plan generation failed."),
+        ...(!isProduction
+          ? { error: error?.safeDetails || safeErrorMessage(error, "Care plan generation failed.") }
+          : {}),
       });
     }
   }
@@ -1171,11 +1167,7 @@ app.post(
         plan,
       });
     } catch (error) {
-      console.error(
-        "\nLEGACY GENERATION ERROR"
-      );
-
-      console.error(error);
+      logServerError("Legacy care plan route failed.", error);
 
       if (req.file) {
         cleanupFile(
@@ -1187,8 +1179,7 @@ app.post(
         success: false,
 
         message:
-          error?.message ||
-          "Care plan generation failed.",
+          safeErrorMessage(error, "Care plan generation failed."),
       });
     }
   }
@@ -1205,11 +1196,7 @@ app.use(
     res,
     next
   ) => {
-    console.error(
-      "\nGLOBAL SERVER ERROR:"
-    );
-
-    console.error(error);
+    logServerError("Request failed.", error);
 
     if (
       error instanceof
@@ -1219,7 +1206,7 @@ app.use(
         success: false,
 
         message:
-          error.message,
+          safeErrorMessage(error, "Upload failed."),
       });
     }
 
@@ -1227,8 +1214,7 @@ app.use(
       success: false,
 
       message:
-        error?.message ||
-        "Internal server error.",
+        safeErrorMessage(error, "Internal server error."),
     });
   }
 );
@@ -1242,9 +1228,9 @@ async function startServer() {
     databaseConnected = await connectDatabase();
     console.log(databaseConnected ? "MongoDB connected." : "MongoDB is not configured; database routes are unavailable.");
   } catch (error) {
-    console.error("MongoDB connection failed:", error.message);
+    logServerError("MongoDB connection failed.", error);
   }
-  app.listen(PORT, () => {
+  app.listen(PORT, "0.0.0.0", () => {
     console.log(
       "\n========================================"
     );
