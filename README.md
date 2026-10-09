@@ -84,9 +84,9 @@ For the strongest hackathon demo, add a Gemini API key.
 
 ## Deployment
 
-See [the Vercel, Render, and MongoDB Atlas deployment guide](docs/DEPLOYMENT.md).
-The frontend uses `VITE_API_URL` (see `frontend/.env.example`) to reach the
-backend; keep MongoDB, Gemini, and `AUTH_SECRET` values on the backend only.
+See [the Netlify and MongoDB Atlas deployment guide](docs/DEPLOYMENT.md).
+The React frontend and Express API deploy together; keep MongoDB, Gemini, and
+`AUTH_SECRET` values in Netlify's function environment, never in browser code.
 
 ## Demo flow
 

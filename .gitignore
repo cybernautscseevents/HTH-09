@@ -4,6 +4,7 @@ node_modules/
 !.env.example
 dist/
 build/
+.netlify/
 backend/src/uploads/
 .DS_Store
 *.log

@@ -1,7 +1,7 @@
 # API quick reference
 
-All routes are under `/api`. The Vercel frontend points to the backend using
-`VITE_API_URL`, for example `https://your-service.onrender.com/api`.
+All routes are under `/api`. On Netlify, requests are rewritten to the Express
+function while preserving this path prefix.
 
 ## Health
 

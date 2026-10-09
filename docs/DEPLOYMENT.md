@@ -1,93 +1,56 @@
-# Deployment guide
+# Deploy CareBridge to Netlify
 
-Deploy the frontend to Vercel, the Express API to Render, and persist application
-data in MongoDB Atlas. Gemini remains the existing care-plan provider.
+The existing Vite frontend and Express API deploy as one Netlify site. The API
+continues to use its existing `/api/...` routes through a Netlify Function.
 
-## 1. Rotate exposed credentials
+## Before deploying
 
-The Gemini API key and authentication secret were exposed during development.
-Revoke the old Gemini key in Google AI Studio and create a replacement. Generate
-a new random `AUTH_SECRET` (at least 32 characters). Do not paste either value
-into source code, Vercel, or chat. Set the replacement key in local
-`backend/.env` and in Render's environment settings. Generate a different
-`AUTH_SECRET` for Render; replacing a secret invalidates existing login tokens.
+Create or select a Netlify site connected to this GitHub repository and branch
+`main`. Add the site's environment variables in Netlify before production
+deploy.
 
-## 2. Create MongoDB Atlas database
+## Build settings
 
-1. Create an Atlas cluster and a database user with a strong unique password.
-2. Add the Render service's outbound IP addresses to the Atlas IP access list.
-   If the Render plan does not provide stable outbound IPs, follow Render's
-   current static-egress-IP options. Do not open the database to all IPs for a
-   production deployment.
-3. In Atlas, use **Connect > Drivers** to copy the Node.js connection URI. Replace
-   the password placeholder and URL-encode any special characters in the
-   database user's password.
-4. Use database name `dischara` (or set `MONGODB_DB` consistently). Keep the URI
-   private and configure it only on the backend.
+The root `netlify.toml` contains these settings:
 
-The existing MongoDB driver supports Atlas `mongodb+srv://` connection strings.
-The backend creates its required user and patient-data indexes at startup.
+- Build command: `npm ci --prefix backend && npm ci --prefix frontend && npm run build --prefix frontend`
+- Publish directory: `frontend/dist`
+- Functions directory: `backend/netlify/functions`
+- Node.js: 22
+- API rewrite: `/api/*` to the Express function, preserving the current API routes
 
-## 3. Deploy the backend to Render
+## Netlify environment variables
 
-Create a **Web Service** from the GitHub repository:
-
-- Branch: `main`
-- Root Directory: `backend`
-- Runtime: Node
-- Build Command: `npm install`
-- Start Command: `npm start`
-
-Set these environment variables in the Render service dashboard:
+In **Project configuration > Environment variables**, configure these for
+Functions/Production:
 
 | Variable | Value |
 | --- | --- |
 | `NODE_ENV` | `production` |
-| `CLIENT_URL` | Exact deployed Vercel origin, e.g. `https://your-app.vercel.app` |
-| `GEMINI_API_KEY` | Newly rotated Gemini API key |
+| `GEMINI_API_KEY` | A currently valid Gemini API key; set as a secret |
 | `GEMINI_MODEL` | `gemini-3.1-flash-lite` |
-| `MONGODB_URI` | Atlas driver URI |
+| `MONGODB_URI` | MongoDB Atlas driver URI; set as a secret |
 | `MONGODB_DB` | `dischara` |
-| `AUTH_SECRET` | Newly generated random secret, at least 32 characters |
+| `AUTH_SECRET` | A unique random secret at least 32 characters; set as a secret |
+| `CLIENT_URL` | The production Netlify site origin, such as `https://your-site.netlify.app` |
 
-Render supplies `PORT`; leave it unset in service environment variables. The
-server listens on Render's port and on `0.0.0.0`. After deploy, check
-`https://<render-service>/api/health` for `database: "MongoDB"` and
-`geminiConnected: true`.
+`VITE_API_URL=/api` is configured in `netlify.toml` for the Vite production
+build. Do not set backend secrets as `VITE_` variables; those are included in
+browser code. The function uses Netlify's temporary directory for uploaded
+files and requires MongoDB Atlas to be reachable from Netlify Functions.
 
-## 4. Deploy the frontend to Vercel
+## Deploy and verify
 
-Import the repository into Vercel with:
+After environment variables are configured, run a production deploy. Check
+`https://<your-site>.netlify.app/api/health`; it should report MongoDB and AI
+configuration. Then verify login, `POST /api/careplan/generate`, document
+extraction, reminders, and care-plan history.
 
-- Root Directory: `frontend`
-- Framework preset: Vite
-- Build Command: `npm run build`
-- Output Directory: `dist`
+## Netlify Function constraints
 
-Set this environment variable for Production (and Preview if needed):
-
-| Variable | Value |
-| --- | --- |
-| `VITE_API_URL` | `https://<render-service>/api` |
-
-Redeploy after changing Vercel environment variables. Add the final Vercel
-origin to Render's `CLIENT_URL` and redeploy the backend. The backend also
-allows the local Vite origins for development; other browser origins are
-rejected. Do not put Gemini, MongoDB, or authentication secrets in Vercel
-variables. Only `VITE_` values are exposed to browser code.
-
-## 5. Local development
-
-Copy `backend/.env.example` to `backend/.env`; set local MongoDB, a Gemini key,
-and a random `AUTH_SECRET`. Copy `frontend/.env.example` to `frontend/.env` if
-you need to override the default API URL. The `.env` files are ignored by Git.
-
-## Deployment order
-
-1. Revoke and replace the exposed Gemini key; create fresh authentication secrets.
-2. Create Atlas and configure network access and database credentials.
-3. Deploy Render with its production environment variables and verify health.
-4. Deploy Vercel with `VITE_API_URL` set to the Render API base URL.
-5. Set Render `CLIENT_URL` to the final Vercel origin and redeploy Render.
-6. Verify registration/login, document extraction, care-plan generation,
-   patient-data persistence, reminders, and care-plan history in the deployed app.
+Netlify synchronous functions have a 60-second execution limit and a 6 MB
+buffered request/response limit. Binary uploads are base64 encoded, so their
+effective request limit is about 4.5 MB. The existing backend accepts files up
+to 15 MB, so uploads above Netlify's request limit cannot reach Express without
+a separate direct-to-object-storage upload flow. Keep this in mind when using
+large discharge files.

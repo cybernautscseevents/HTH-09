@@ -4,8 +4,8 @@ import express from "express";
 import cors from "cors";
 import multer from "multer";
 import fs from "fs";
+import os from "os";
 import path from "path";
-import { fileURLToPath } from "url";
 import { PDFParse } from "pdf-parse";
 import mammoth from "mammoth";
 import { GoogleGenAI } from "@google/genai";
@@ -16,18 +16,25 @@ import { createToken, hashPassword, requireAuth, verifyPassword } from "./auth.j
 // PATH SETUP
 // ======================================================
 
-const __filename = fileURLToPath(import.meta.url);
+const __filename = path.resolve(process.argv[1] || "src/server.js");
 const __dirname = path.dirname(__filename);
 
 // ======================================================
 // SERVER CONFIGURATION
 // ======================================================
 
-const app = express();
+export const app = express();
 
 const PORT = process.env.PORT || 5000;
 let databaseConnected = false;
+let databaseInitialization;
 const isProduction = process.env.NODE_ENV === "production";
+const isNetlifyFunction = Boolean(
+  process.env.NETLIFY ||
+  process.env.NETLIFY_DEV ||
+  process.env.AWS_LAMBDA_FUNCTION_NAME ||
+  process.env.LAMBDA_TASK_ROOT
+);
 
 function redactSensitiveText(value) {
   return String(value || "")
@@ -50,6 +57,22 @@ function logServerError(label, error) {
   });
 }
 
+export async function ensureDatabaseConnected() {
+  if (databaseConnected) return true;
+  if (!databaseInitialization) {
+    databaseInitialization = connectDatabase()
+      .then((connected) => {
+        databaseConnected = connected;
+        return connected;
+      })
+      .catch((error) => {
+        databaseInitialization = null;
+        throw error;
+      });
+  }
+  return databaseInitialization;
+}
+
 // Gemini model
 // Can also be overridden from backend/.env
 const GEMINI_MODEL =
@@ -60,7 +83,7 @@ const GEMINI_MODEL =
 // ======================================================
 
 const allowedOrigins = new Set(
-  [process.env.CLIENT_URL, process.env.FRONTEND_ORIGIN, "http://localhost:5173", "http://127.0.0.1:5173"]
+  [process.env.CLIENT_URL, process.env.URL, process.env.DEPLOY_PRIME_URL, process.env.FRONTEND_ORIGIN, "http://localhost:5173", "http://127.0.0.1:5173"]
     .flatMap((value) => String(value || "").split(","))
     .map((origin) => origin.trim().replace(/\/+$/, ""))
     .filter(Boolean)
@@ -95,7 +118,9 @@ app.use(
 // UPLOAD DIRECTORY
 // ======================================================
 
-const uploadDir = path.join(__dirname, "uploads");
+const uploadDir = isNetlifyFunction
+  ? path.join(os.tmpdir(), "carebridge-uploads")
+  : path.join(__dirname, "uploads");
 
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, {
@@ -1225,7 +1250,7 @@ app.use(
 
 async function startServer() {
   try {
-    databaseConnected = await connectDatabase();
+    databaseConnected = await ensureDatabaseConnected();
     console.log(databaseConnected ? "MongoDB connected." : "MongoDB is not configured; database routes are unavailable.");
   } catch (error) {
     logServerError("MongoDB connection failed.", error);
@@ -1279,4 +1304,6 @@ async function startServer() {
   });
 }
 
-startServer();
+if (!isNetlifyFunction) {
+  startServer();
+}
